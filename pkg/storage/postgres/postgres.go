@@ -11,6 +11,7 @@ import (
 
 	"github.com/IBM/pgxpoolprometheus"
 	sq "github.com/Masterminds/squirrel"
+	"github.com/aws-samples/aurora-dsql-samples/go/dsql-pgx-connector/dsql"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -103,7 +104,13 @@ func parseConfig(uri string, override bool, cfg *sqlcommon.Config) (*pgxpool.Con
 }
 
 // initDB initializes a new postgres database connection.
+// Supports both standard PostgreSQL URIs (postgres://) and Aurora DSQL URIs (dsql://).
 func initDB(uri string, override bool, cfg *sqlcommon.Config) (*pgxpool.Pool, error) {
+	// Check for DSQL URI scheme
+	if strings.HasPrefix(uri, "dsql://") {
+		return initDSQLDB(uri, cfg)
+	}
+
 	c, err := parseConfig(uri, override, cfg)
 	if err != nil {
 		return nil, err
@@ -115,6 +122,38 @@ func initDB(uri string, override bool, cfg *sqlcommon.Config) (*pgxpool.Pool, er
 	}
 
 	return db, nil
+}
+
+// initDSQLDB initializes a new Aurora DSQL database connection.
+// The DSQL connector handles IAM authentication automatically.
+func initDSQLDB(uri string, cfg *sqlcommon.Config) (*pgxpool.Pool, error) {
+	// Create DSQL config from URI
+	dsqlCfg, err := dsql.ParseConnectionString(uri)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DSQL connection string: %w", err)
+	}
+
+	// Apply pool configuration from OpenFGA config
+	if cfg.MaxOpenConns != 0 {
+		dsqlCfg.MaxConns = int32(cfg.MaxOpenConns)
+	}
+	if cfg.MinOpenConns != 0 {
+		dsqlCfg.MinConns = int32(cfg.MinOpenConns)
+	}
+	if cfg.ConnMaxLifetime != 0 {
+		dsqlCfg.MaxConnLifetime = cfg.ConnMaxLifetime
+	}
+	if cfg.ConnMaxIdleTime != 0 {
+		dsqlCfg.MaxConnIdleTime = cfg.ConnMaxIdleTime
+	}
+
+	pool, err := dsql.NewPool(context.Background(), dsqlCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create DSQL connection pool: %w", err)
+	}
+
+	// Return the embedded *pgxpool.Pool
+	return pool.Pool, nil
 }
 
 // New creates a new [Datastore] storage.

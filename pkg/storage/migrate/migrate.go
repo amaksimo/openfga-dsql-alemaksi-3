@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
+	"github.com/aws-samples/aurora-dsql-samples/go/dsql-pgx-connector/dsql"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-sql-driver/mysql"
 	"github.com/pressly/goose/v3"
@@ -103,6 +105,32 @@ func RunMigrations(cfg MigrationConfig) error {
 		if err != nil {
 			return err
 		}
+	case "dsql":
+		driver = "pgx"
+		migrationsPath = assets.DSQLMigrationDir
+
+		// Generate IAM authentication token for DSQL
+		ctx := context.Background()
+		token, err := dsql.GenerateDBToken(ctx, uri)
+		if err != nil {
+			return fmt.Errorf("failed to generate DSQL auth token: %w", err)
+		}
+
+		// Convert dsql:// to postgres:// and set the token as password
+		pgURI := "postgres" + strings.TrimPrefix(uri, "dsql")
+		dbURI, err := url.Parse(pgURI)
+		if err != nil {
+			return fmt.Errorf("invalid database uri: %w", err)
+		}
+
+		username := "admin"
+		if dbURI.User != nil {
+			username = dbURI.User.Username()
+		}
+		dbURI.User = url.UserPassword(username, token)
+		uri = dbURI.String()
+
+		log.Info("using DSQL datastore with IAM authentication")
 	case "":
 		return fmt.Errorf("missing datastore engine type")
 	default:

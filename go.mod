@@ -7,6 +7,7 @@ toolchain go1.25.5
 require (
 	github.com/IBM/pgxpoolprometheus v1.1.2
 	github.com/Masterminds/squirrel v1.5.4
+	github.com/aws-samples/aurora-dsql-samples/go/dsql-pgx-connector v0.0.0
 	github.com/MicahParks/keyfunc/v2 v2.1.0
 	github.com/Yiling-J/theine-go v0.6.2
 	github.com/cenkalti/backoff/v4 v4.3.0
@@ -164,3 +165,5 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 )
+
+replace github.com/aws-samples/aurora-dsql-samples/go/dsql-pgx-connector => ../aurora-dsql-samples/go/dsql-pgx-connector
