@@ -26,7 +26,7 @@ func prepareDSQLMigration(uri string, log logger.Logger) (*dsqlMigrationConfig, 
 	ctx := context.Background()
 
 	// Generate IAM auth token
-	token, err := dsql.GenerateDBToken(ctx, uri)
+	token, err := dsql.GenerateTokenConnString(ctx, uri)
 	if err != nil {
 		return nil, fmt.Errorf("generate DSQL auth token: %w", err)
 	}
@@ -43,6 +43,12 @@ func prepareDSQLMigration(uri string, log logger.Logger) (*dsqlMigrationConfig, 
 		username = dbURI.User.Username()
 	}
 	dbURI.User = url.UserPassword(username, token)
+
+	// DSQL requires SSL; remove region param which PostgreSQL doesn't understand
+	q := dbURI.Query()
+	q.Set("sslmode", "require")
+	q.Del("region")
+	dbURI.RawQuery = q.Encode()
 
 	finalURI := dbURI.String()
 
