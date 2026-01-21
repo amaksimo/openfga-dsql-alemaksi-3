@@ -66,8 +66,8 @@ func prepareDSQLMigration(uri string, log logger.Logger) (*dsqlMigrationConfig, 
 	}, nil
 }
 
-// ensureGooseTableForDSQL creates the goose_db_version table if needed.
-// DSQL doesn't support SERIAL/IDENTITY, so we use UUID for the ID.
+// ensureGooseTableForDSQL creates the goose_db_version table if it doesn't exist.
+// DSQL doesn't support SERIAL/IDENTITY, so we use BIGINT with epoch microseconds.
 func ensureGooseTableForDSQL(uri string, log logger.Logger) error {
 	db, err := goose.OpenDBWithDriver("pgx", uri)
 	if err != nil {
@@ -75,39 +75,10 @@ func ensureGooseTableForDSQL(uri string, log logger.Logger) error {
 	}
 	defer db.Close()
 
-	var exists bool
-	err = db.QueryRow(`
-		SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_name = 'goose_db_version'
-		)
-	`).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("check goose table: %w", err)
-	}
-
-	if exists {
-		// Ensure initial row exists (goose expects version 0)
-		var hasRows bool
-		err = db.QueryRow(`SELECT EXISTS (SELECT 1 FROM goose_db_version)`).Scan(&hasRows)
-		if err != nil {
-			return fmt.Errorf("check goose table contents: %w", err)
-		}
-		if !hasRows {
-			_, err = db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (0, TRUE)`)
-			if err != nil {
-				return fmt.Errorf("insert initial goose row: %w", err)
-			}
-			log.Info("inserted initial row into goose_db_version table")
-		}
-		log.Info("goose_db_version table already exists")
-		return nil
-	}
-
-	// Create goose table with UUID as ID
+	// Create table if not exists - uses BIGINT id with epoch microseconds for ordering
 	_, err = db.Exec(`
-		CREATE TABLE goose_db_version (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		CREATE TABLE IF NOT EXISTS goose_db_version (
+			id BIGINT PRIMARY KEY DEFAULT (EXTRACT(EPOCH FROM now()) * 1000000)::BIGINT,
 			version_id BIGINT NOT NULL,
 			is_applied BOOLEAN NOT NULL,
 			tstamp TIMESTAMP DEFAULT now()
@@ -117,11 +88,17 @@ func ensureGooseTableForDSQL(uri string, log logger.Logger) error {
 		return fmt.Errorf("create goose table: %w", err)
 	}
 
-	_, err = db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (0, TRUE)`)
-	if err != nil {
-		return fmt.Errorf("insert initial goose row: %w", err)
+	// Goose expects an initial row with version 0 to exist
+	var hasRows bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM goose_db_version)`).Scan(&hasRows); err != nil {
+		return fmt.Errorf("check goose table: %w", err)
+	}
+	if !hasRows {
+		if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (0, TRUE)`); err != nil {
+			return fmt.Errorf("insert initial goose row: %w", err)
+		}
 	}
 
-	log.Info("created goose_db_version table for DSQL")
+	log.Info("ensured goose_db_version table exists for DSQL")
 	return nil
 }
