@@ -47,6 +47,16 @@ func NewPgxTxnGetRows(txn PgxQuery, sb SQLBuilder) (*PgxTxnIterQuery, error) {
 	}, nil
 }
 
+// NewPgxTxnGetRowsRaw creates a PgxTxnIterQuery with raw SQL and args (no SQLBuilder).
+// Useful when building custom queries like UNION ALL for DSQL optimization.
+func NewPgxTxnGetRowsRaw(txn PgxQuery, query string, args ...interface{}) (*PgxTxnIterQuery, error) {
+	return &PgxTxnIterQuery{
+		txn:   txn,
+		query: query,
+		args:  args,
+	}, nil
+}
+
 // GetRows executes the txn query and returns the sqlcommon.Rows.
 func (p *PgxTxnIterQuery) GetRows(ctx context.Context) (sqlcommon.Rows, error) {
 	rows, err := p.txn.Query(ctx, p.query, p.args...)

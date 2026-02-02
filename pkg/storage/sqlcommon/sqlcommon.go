@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -634,6 +635,37 @@ func BuildRowConstructorIN(keys []TupleLockKey) (string, []interface{}) {
 		args = append(args, k.objectType, k.objectID, k.relation, k.user, k.userType)
 	}
 	sb.WriteByte(')')
+	return sb.String(), args
+}
+
+// BuildDSQLUnionAllQuery builds a UNION ALL query for DSQL to enable efficient index usage.
+// DSQL's query planner doesn't optimize row-constructor IN well, so we use UNION ALL
+// with individual SELECTs that each specify all primary key columns for index lookup.
+// Returns the query string with $N placeholders and the argument list.
+func BuildDSQLUnionAllQuery(store string, keys []TupleLockKey, columns []string) (string, []interface{}) {
+	if len(keys) == 0 {
+		return "", nil
+	}
+
+	var sb strings.Builder
+	columnsStr := strings.Join(columns, ", ")
+	args := make([]interface{}, 0, len(keys)*6) // 6 args per key (store + 5 key fields)
+	argIndex := 1
+
+	for i, k := range keys {
+		if i > 0 {
+			sb.WriteString(" UNION ALL ")
+		}
+		// Build: SELECT cols FROM tuple WHERE store = $1 AND object_type = $2 AND ...
+		sb.WriteString(fmt.Sprintf(
+			"SELECT %s FROM tuple WHERE store = $%d AND object_type = $%d AND object_id = $%d AND relation = $%d AND _user = $%d AND user_type = $%d",
+			columnsStr,
+			argIndex, argIndex+1, argIndex+2, argIndex+3, argIndex+4, argIndex+5,
+		))
+		args = append(args, store, k.objectType, k.objectID, k.relation, k.user, k.userType)
+		argIndex += 6
+	}
+
 	return sb.String(), args
 }
 
