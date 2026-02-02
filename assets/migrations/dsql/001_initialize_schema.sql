@@ -11,7 +11,7 @@ CREATE TABLE tuple (
     user_type TEXT NOT NULL,
     ulid TEXT NOT NULL,
     inserted_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (store, object_type, object_id, relation, _user)
+    PRIMARY KEY (store, object_type, object_id, relation, _user, user_type)
 );
 
 CREATE INDEX ASYNC idx_tuple_user ON tuple (store, object_type, object_id, relation, _user, user_type);
