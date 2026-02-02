@@ -341,15 +341,16 @@ func (s *Datastore) Write(
 }
 
 // selectAllExistingRowsForUpdate executes SELECT … FOR UPDATE for all lockKeys.
-// Returns a map of existing keys. If useForUpdate is false (DSQL), skips FOR UPDATE.
+// Returns a map of existing keys. DSQL uses OCC so skips FOR UPDATE.
 func selectAllExistingRowsForUpdate(ctx context.Context,
 	lockKeys []sqlcommon.TupleLockKey,
 	txn PgxQuery,
 	store string,
-	useForUpdate bool) (map[string]*openfgav1.Tuple, error) {
+	isDSQL bool) (map[string]*openfgav1.Tuple, error) {
 	total := len(lockKeys)
 	stbl := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 	existing := make(map[string]*openfgav1.Tuple, total)
+	useForUpdate := !isDSQL // DSQL uses optimistic concurrency control, so skip FOR UPDATE
 
 	for start := 0; start < total; start += storage.DefaultMaxTuplesPerWrite {
 		end := start + storage.DefaultMaxTuplesPerWrite
@@ -358,7 +359,7 @@ func selectAllExistingRowsForUpdate(ctx context.Context,
 		}
 		keys := lockKeys[start:end]
 
-		if err := selectExistingRowsForWrite(ctx, stbl, txn, store, keys, existing, useForUpdate); err != nil {
+		if err := selectExistingRowsForWrite(ctx, stbl, txn, store, keys, existing, useForUpdate, isDSQL); err != nil {
 			return nil, err
 		}
 	}
@@ -526,7 +527,7 @@ func (s *Datastore) write(
 
 	// 3. If list compiled in step 2 is not empty, execute SELECT … FOR UPDATE statement
 	// DSQL uses OCC, so skip FOR UPDATE (conflicts detected at commit time).
-	existing, err := selectAllExistingRowsForUpdate(ctx, lockKeys, txn, store, !s.isDSQL)
+	existing, err := selectAllExistingRowsForUpdate(ctx, lockKeys, txn, store, s.isDSQL)
 	if err != nil {
 		return err
 	}
@@ -1319,21 +1320,39 @@ func HandleSQLError(err error, args ...interface{}) error {
 
 // selectExistingRowsForWrite selects existing rows for the given keys.
 // If useForUpdate is true, locks rows with FOR UPDATE. DSQL skips this (uses OCC).
-func selectExistingRowsForWrite(ctx context.Context, stbl sq.StatementBuilderType, txn PgxQuery, store string, keys []sqlcommon.TupleLockKey, existing map[string]*openfgav1.Tuple, useForUpdate bool) error {
-	inExpr, args := sqlcommon.BuildRowConstructorIN(keys)
-
-	sb := stbl.
-		Select(sqlcommon.SQLIteratorColumns()...).
-		From("tuple").
-		Where(sq.Eq{"store": store}).
-		Where(sq.Expr("(object_type, object_id, relation, _user, user_type) IN "+inExpr, args...))
-
-	// DSQL requires equality on all PK columns for FOR UPDATE; skip for DSQL.
-	if useForUpdate {
-		sb = sb.Suffix("FOR UPDATE")
+// For DSQL, uses UNION ALL instead of row-constructor IN to enable efficient index usage.
+func selectExistingRowsForWrite(ctx context.Context, stbl sq.StatementBuilderType, txn PgxQuery, store string, keys []sqlcommon.TupleLockKey, existing map[string]*openfgav1.Tuple, useForUpdate bool, isDSQL bool) error {
+	if len(keys) == 0 {
+		return nil
 	}
 
-	poolGetRows, err := NewPgxTxnGetRows(txn, sb)
+	var poolGetRows *PgxTxnIterQuery
+	var err error
+
+	// DSQL query planner doesn't optimize row-constructor IN well, causing full table scans.
+	// Use UNION ALL for DSQL to force individual index lookups on the primary key.
+	if isDSQL {
+		// Build UNION ALL query: each SELECT uses all PK columns for efficient index lookup
+		unionSQL, args := sqlcommon.BuildDSQLUnionAllQuery(store, keys, sqlcommon.SQLIteratorColumns())
+		poolGetRows, err = NewPgxTxnGetRowsRaw(txn, unionSQL, args...)
+	} else {
+		// Use row-constructor IN for regular PostgreSQL (works well)
+		inExpr, args := sqlcommon.BuildRowConstructorIN(keys)
+
+		sb := stbl.
+			Select(sqlcommon.SQLIteratorColumns()...).
+			From("tuple").
+			Where(sq.Eq{"store": store}).
+			Where(sq.Expr("(object_type, object_id, relation, _user, user_type) IN "+inExpr, args...))
+
+		// DSQL requires equality on all PK columns for FOR UPDATE; skip for DSQL.
+		if useForUpdate {
+			sb = sb.Suffix("FOR UPDATE")
+		}
+
+		poolGetRows, err = NewPgxTxnGetRows(txn, sb)
+	}
+
 	if err != nil {
 		return HandleSQLError(err)
 	}

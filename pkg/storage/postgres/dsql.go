@@ -45,6 +45,16 @@ func withOCCRetry(ctx context.Context, fn func() error) error {
 	}, backoff.WithContext(policy, ctx))
 }
 
+// NewPgxTxnGetRowsRaw creates a PgxTxnIterQuery with raw SQL and args (no SQLBuilder).
+// Used for DSQL-optimized queries like UNION ALL that bypass the query builder.
+func NewPgxTxnGetRowsRaw(txn PgxQuery, query string, args ...interface{}) (*PgxTxnIterQuery, error) {
+	return &PgxTxnIterQuery{
+		txn:   txn,
+		query: query,
+		args:  args,
+	}, nil
+}
+
 // initDSQLDB initializes a new Aurora DSQL database connection.
 // DSQL uses IAM authentication which the connector handles automatically.
 func initDSQLDB(uri string, cfg *sqlcommon.Config) (*pgxpool.Pool, error) {
