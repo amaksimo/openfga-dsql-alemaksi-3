@@ -341,12 +341,12 @@ func (s *Datastore) Write(
 }
 
 // selectAllExistingRowsForUpdate executes SELECT … FOR UPDATE for all lockKeys.
-// Returns a map of existing keys. If useForUpdate is false (DSQL), skips FOR UPDATE.
+// For PostgreSQL (isDSQL=false), uses FOR UPDATE. For DSQL (isDSQL=true), uses OCC.
 func selectAllExistingRowsForUpdate(ctx context.Context,
 	lockKeys []sqlcommon.TupleLockKey,
 	txn PgxQuery,
 	store string,
-	useForUpdate bool) (map[string]*openfgav1.Tuple, error) {
+	isDSQL bool) (map[string]*openfgav1.Tuple, error) {
 	total := len(lockKeys)
 	stbl := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 	existing := make(map[string]*openfgav1.Tuple, total)
@@ -358,7 +358,7 @@ func selectAllExistingRowsForUpdate(ctx context.Context,
 		}
 		keys := lockKeys[start:end]
 
-		if err := selectExistingRowsForWrite(ctx, stbl, txn, store, keys, existing, useForUpdate); err != nil {
+		if err := selectExistingRowsForWrite(ctx, stbl, txn, store, keys, existing, isDSQL); err != nil {
 			return nil, err
 		}
 	}
@@ -366,7 +366,7 @@ func selectAllExistingRowsForUpdate(ctx context.Context,
 }
 
 // For the prepared deleteConditions, execute delete tuples.
-func executeDeleteTuples(ctx context.Context, txn PgxExec, store string, deleteConditions sq.Or) error {
+func executeDeleteTuples(ctx context.Context, txn PgxExec, store string, deleteConditions sq.Or, isDSQL bool) error {
 	stbl := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
 	for start, totalDeletes := 0, len(deleteConditions); start < totalDeletes; start += storage.DefaultMaxTuplesPerWrite {
@@ -377,8 +377,24 @@ func executeDeleteTuples(ctx context.Context, txn PgxExec, store string, deleteC
 
 		deleteConditionsBatch := deleteConditions[start:end]
 
-		stmt, args, err := stbl.Delete("tuple").Where(sq.Eq{"store": store}).
-			Where(deleteConditionsBatch).ToSql()
+		var stmt string
+		var args []interface{}
+		var err error
+
+		if isDSQL {
+			// DSQL: Use USING (VALUES ...) AS k(...) for better query plan
+			suffix, suffixArgs := sqlcommon.BuildDSQLDeleteUsing(store, deleteConditionsBatch)
+			stmt, args, err = stbl.Delete("tuple t").
+				Suffix(suffix, suffixArgs...).
+				ToSql()
+		} else {
+			// PostgreSQL: Use standard DELETE with OR conditions
+			stmt, args, err = stbl.Delete("tuple").
+				Where(sq.Eq{"store": store}).
+				Where(deleteConditionsBatch).
+				ToSql()
+		}
+
 		if err != nil {
 			// Should never happen because we craft the delete statement
 			return HandleSQLError(err)
@@ -526,7 +542,7 @@ func (s *Datastore) write(
 
 	// 3. If list compiled in step 2 is not empty, execute SELECT … FOR UPDATE statement
 	// DSQL uses OCC, so skip FOR UPDATE (conflicts detected at commit time).
-	existing, err := selectAllExistingRowsForUpdate(ctx, lockKeys, txn, store, !s.isDSQL)
+	existing, err := selectAllExistingRowsForUpdate(ctx, lockKeys, txn, store, s.isDSQL)
 	if err != nil {
 		return err
 	}
@@ -543,7 +559,7 @@ func (s *Datastore) write(
 		return err
 	}
 
-	err = executeDeleteTuples(ctx, txn, store, deleteConditions)
+	err = executeDeleteTuples(ctx, txn, store, deleteConditions, s.isDSQL)
 	if err != nil {
 		return err
 	}
@@ -1318,24 +1334,49 @@ func HandleSQLError(err error, args ...interface{}) error {
 }
 
 // selectExistingRowsForWrite selects existing rows for the given keys.
-// If useForUpdate is true, locks rows with FOR UPDATE. DSQL skips this (uses OCC).
-func selectExistingRowsForWrite(ctx context.Context, stbl sq.StatementBuilderType, txn PgxQuery, store string, keys []sqlcommon.TupleLockKey, existing map[string]*openfgav1.Tuple, useForUpdate bool) error {
-	inExpr, args := sqlcommon.BuildRowConstructorIN(keys)
+// For PostgreSQL (isDSQL=false), locks rows with FOR UPDATE.
+// For DSQL (isDSQL=true), uses a CTE with JOIN for better query plan performance and OCC.
+func selectExistingRowsForWrite(ctx context.Context, stbl sq.StatementBuilderType, txn PgxQuery, store string, keys []sqlcommon.TupleLockKey, existing map[string]*openfgav1.Tuple, isDSQL bool) error {
+	var poolGetRows *PgxTxnIterQuery
+	var err error
 
-	sb := stbl.
-		Select(sqlcommon.SQLIteratorColumns()...).
-		From("tuple").
-		Where(sq.Eq{"store": store}).
-		Where(sq.Expr("(object_type, object_id, relation, _user, user_type) IN "+inExpr, args...))
+	if isDSQL {
+		// DSQL: Use CTE with JOIN for better query plan
+		ctePrefix, joinCond, cteArgs := sqlcommon.BuildCTESelectJoin(keys)
 
-	// DSQL requires equality on all PK columns for FOR UPDATE; skip for DSQL.
-	if useForUpdate {
-		sb = sb.Suffix("FOR UPDATE")
-	}
+		// Prefix all columns with "t." to avoid ambiguity
+		cols := sqlcommon.SQLIteratorColumns()
+		selectCols := make([]string, len(cols))
+		for i, col := range cols {
+			selectCols[i] = "t." + col
+		}
 
-	poolGetRows, err := NewPgxTxnGetRows(txn, sb)
-	if err != nil {
-		return HandleSQLError(err)
+		sb := stbl.
+			Select(selectCols...).
+			Prefix(ctePrefix, cteArgs...).
+			From("tuple t").
+			Join(joinCond).
+			Where(sq.Eq{"t.store": store})
+
+		poolGetRows, err = NewPgxTxnGetRows(txn, sb)
+		if err != nil {
+			return HandleSQLError(err)
+		}
+	} else {
+		// PostgreSQL: Use row-constructor IN with FOR UPDATE
+		inExpr, args := sqlcommon.BuildRowConstructorIN(keys)
+
+		sb := stbl.
+			Select(sqlcommon.SQLIteratorColumns()...).
+			From("tuple").
+			Where(sq.Eq{"store": store}).
+			Where(sq.Expr("(object_type, object_id, relation, _user, user_type) IN "+inExpr, args...)).
+			Suffix("FOR UPDATE")
+
+		poolGetRows, err = NewPgxTxnGetRows(txn, sb)
+		if err != nil {
+			return HandleSQLError(err)
+		}
 	}
 
 	iter := sqlcommon.NewSQLTupleIterator(poolGetRows, HandleSQLError)
