@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/aws-samples/aurora-dsql-samples/go/dsql-pgx-connector/dsql"
+	"github.com/awslabs/aurora-dsql-connectors/go/pgx/dsql"
 )
 
 // PreparePostgresURI converts a dsql:// URI to a postgres:// URI with IAM authentication.

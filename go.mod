@@ -9,7 +9,7 @@ require (
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/MicahParks/keyfunc/v2 v2.1.0
 	github.com/Yiling-J/theine-go v0.6.2
-	github.com/aws-samples/aurora-dsql-samples/go/dsql-pgx-connector v0.1.1
+	github.com/awslabs/aurora-dsql-connectors/go/pgx v0.1.2
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/containerd/errdefs v1.0.0

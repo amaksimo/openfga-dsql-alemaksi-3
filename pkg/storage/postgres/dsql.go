@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aws-samples/aurora-dsql-samples/go/dsql-pgx-connector/dsql"
+	"github.com/awslabs/aurora-dsql-connectors/go/pgx/dsql"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"

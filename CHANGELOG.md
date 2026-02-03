@@ -13,6 +13,7 @@ Try to keep listed changes to a concise bulleted list of simple explanations of 
 
 ### Changed
 - Datastore throttling separated from dispatch throttling in BatchCheck, ListUsers metadata. Also, `throttling_type` label added to `throttledRequestCounter` metric to differentiate between dispatch/datastore throttling. [#2839](https://github.com/openfga/openfga/pull/2839)
+- Update Aurora DSQL connector to use the new official monorepo location (`github.com/awslabs/aurora-dsql-connectors/go/pgx`). [#15](https://github.com/amaksimo/openfga-dsql-alemaksi/pull/15)
 
 ### Removed
 - Removed custom grpc_prometheus fork, replace with go-grpc-middleware's provider. Removes the custom `grpc_code` label on this metric. [#2855](https://github.com/openfga/openfga/pull/2855)
